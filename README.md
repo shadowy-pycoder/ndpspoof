@@ -11,7 +11,7 @@
 ## Install
 
 ```shell
-CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/ndpspoof/cmd/af@latest
+CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/ndpspoof/cmd/nf@latest
 ```
 
 ## Usage
