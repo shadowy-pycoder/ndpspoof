@@ -2,7 +2,6 @@
 package ndpspoof
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,12 +10,12 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/mdlayher/packet"
@@ -24,10 +23,10 @@ import (
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/mshark/oui"
-	"golang.org/x/sys/unix"
 )
 
 var (
+	AutoConfigSupportedOS                   = []string{"linux", "android"}
 	defaultRLT                              = 600 // also used for RDNSS lifetime
 	probeThrottling                         = 50 * time.Millisecond
 	probeTargetsInterval                    = 60 * time.Second
@@ -179,6 +178,9 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 	}
 	if nsc.RDNSS && nsc.DNSServers == "" {
 		return nil, fmt.Errorf("list of dns servers is empty")
+	}
+	if !slices.Contains(AutoConfigSupportedOS, runtime.GOOS) && nsc.Auto {
+		return nil, fmt.Errorf("auto configuration is not supported on %s", runtime.GOOS)
 	}
 	return nsc, nil
 }
@@ -484,6 +486,9 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 	ndpspoofer.debug = conf.Debug
 	ndpspoofer.auto = conf.Auto
 	if ndpspoofer.auto {
+		if !slices.Contains(AutoConfigSupportedOS, runtime.GOOS) {
+			return nil, fmt.Errorf("auto configuration is not supported on %s", runtime.GOOS)
+		}
 		ndpspoofer.opts = make(map[string]string, 15)
 	}
 	// setting up logger
@@ -517,21 +522,7 @@ func (nr *NDPSpoofer) Start() {
 			// run DNS server if no user provided address added
 			nr.rdnssEnabled = true
 			nr.dnsServers = append(nr.dnsServers, *nr.hostIP)
-			lc := net.ListenConfig{
-				Control: func(network, address string, conn syscall.RawConn) error {
-					var operr error
-					size := 2 * 1024 * 1024
-					if err := conn.Control(func(fd uintptr) {
-						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
-					}); err != nil {
-						return err
-					}
-					return operr
-				},
-			}
-			pconn, err := lc.ListenPacket(context.Background(), "udp", ":53")
+			pconn, err := NewDNSServer()
 			if err != nil {
 				nr.logger.Fatal().Err(err).Msgf("[ndp spoofer] failed listening on %s:53", nr.hostIP)
 			}

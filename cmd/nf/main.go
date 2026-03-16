@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,7 +36,10 @@ func root(args []string) error {
 	flags.BoolVar(&conf.RDNSS, "rdnss", false, "Enable RDNSS spoofing. Enabling this option requires -dns-servers flag")
 	flags.BoolVar(&conf.FullDuplex, "f", false, "Run NA spoofing in fullduplex mode")
 	flags.BoolVar(&conf.Debug, "d", false, "Enable debug logging")
-	flags.BoolVar(&conf.Auto, "auto", false, "Automatically set kernel parameters and network settings for spoofing")
+
+	if slices.Contains(ndpspoof.AutoConfigSupportedOS, runtime.GOOS) {
+		flags.BoolVar(&conf.Auto, "auto", false, "Automatically set kernel parameters and network settings for spoofing")
+	}
 	flags.BoolFunc("v", "Show version and build information", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", ndpspoof.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
