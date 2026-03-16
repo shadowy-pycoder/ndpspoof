@@ -857,7 +857,7 @@ ip6tables -t nat -A POSTROUTING -o %s -j MASQUERADE
 		return err
 	}
 	nr.runSysctlOptCmd("net.ipv4.ip_forward", "1")
-	nr.runSysctlOptCmd("net.ipv6.conf.all.forwarding", "0")
+	nr.runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1")
 	nr.runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0")
 	nr.runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0")
 	nr.runSysctlOptCmd("fs.file-max", "100000")
