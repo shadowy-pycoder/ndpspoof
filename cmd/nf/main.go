@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -34,6 +35,7 @@ func root(args []string) error {
 	flags.BoolVar(&conf.RDNSS, "rdnss", false, "Enable RDNSS spoofing. Enabling this option requires -dns-servers flag")
 	flags.BoolVar(&conf.FullDuplex, "f", false, "Run NA spoofing in fullduplex mode")
 	flags.BoolVar(&conf.Debug, "d", false, "Enable debug logging")
+	flags.BoolVar(&conf.Auto, "auto", false, "Automatically set kernel parameters and network settings for spoofing")
 	flags.BoolFunc("v", "Show version and build information", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", ndpspoof.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
@@ -62,7 +64,7 @@ func root(args []string) error {
 		os.Exit(0)
 		return nil
 	})
-	flags.DurationVar(&conf.RouterLifetime, "rlt", time.Duration(30*time.Second), "Router lifetime for RA spoofing")
+	flags.DurationVar(&conf.RouterLifetime, "rlt", time.Duration(600*time.Second), "Router lifetime for RA spoofing")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -131,6 +133,20 @@ func root(args []string) error {
 		result = macPattern.ReplaceAllStringFunc(result, func(match string) string {
 			return colors.Yellow(match).String()
 		})
+		return result
+	}
+	output.FormatErrFieldValue = func(i any) string {
+		s := i.(string)
+		if *nocolor {
+			return s
+		}
+		result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
+			if macPattern.MatchString(match) {
+				return match
+			}
+			return colors.Red(match).String()
+		})
+		result = strings.ReplaceAll(result, "->", "→ ")
 		return result
 	}
 	logger := zerolog.New(output).With().Timestamp().Logger()

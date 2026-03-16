@@ -6,7 +6,8 @@ require (
 	github.com/mdlayher/packet v1.1.2
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.21
+	github.com/shadowy-pycoder/mshark v0.0.22
+	golang.org/x/sys v0.24.0
 )
 
 require (
@@ -17,5 +18,4 @@ require (
 	github.com/packetcap/go-pcap v0.0.0-20240528124601-8c87ecf5dbc5 // indirect
 	golang.org/x/net v0.28.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.24.0 // indirect
 )

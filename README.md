@@ -19,6 +19,8 @@ CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/n
 ```shell
 Usage of nf:
   -I    Display list of interfaces and exit.
+  -auto
+        Automatically set kernel parameters and network settings for spoofing
   -d    Enable debug logging
   -dns-servers string
         Comma separated list of DNS servers for RDNSS mode. Example: "2001:4860:4860::8888,2606:4700:4700::1111"
@@ -36,7 +38,7 @@ Usage of nf:
   -rdnss
         Enable RDNSS spoofing. Enabling this option requires -dns-servers flag
   -rlt duration
-        Router lifetime for RA spoofing (default 30s)
+        Router lifetime for RA spoofing (default 10m0s)
   -t string
         Targets for NA spoofing. Example: "fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10"
   -v    Show version and build information
