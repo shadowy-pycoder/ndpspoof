@@ -29,6 +29,8 @@ Usage of nf:
         IPv6 address of custom gateway (Default: default gateway)
   -i string
         The name of the network interface. Example: eth0 (Default: default interface)
+  -interval duration
+        Interval between sent packets (default 5s)
   -na
         Enable NA (neighbor advertisement) spoofing
   -nocolor

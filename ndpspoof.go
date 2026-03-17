@@ -31,7 +31,7 @@ var (
 	probeThrottling                         = 50 * time.Millisecond
 	probeTargetsInterval                    = 60 * time.Second
 	refreshNDPCacheInterval                 = 15 * time.Second
-	ndpSpoofTargetsInterval                 = 1 * time.Second
+	ndpSpoofTargetsInterval                 = 5 * time.Second
 	ndpUnspoofPacketCount                   = 5
 	ndpUnspoofTargetsInterval               = 500 * time.Millisecond
 	udpBufferSize                           = 4096
@@ -39,7 +39,7 @@ var (
 	writeTimeoutUDP           time.Duration = 5 * time.Second
 	errInvalidWrite                         = errors.New("invalid write result")
 	errNDPSpoofConfig                       = fmt.Errorf(
-		`failed parsing ndp spoof options. Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true"`,
+		`failed parsing ndp spoof options. Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s"`,
 	)
 )
 
@@ -57,11 +57,12 @@ type NDPSpoofConfig struct {
 	RDNSS          bool
 	Debug          bool
 	Auto           bool
+	PacketInterval time.Duration
 }
 
 // NewNDPSpoofConfig creates NDPSpoofConfig from a list of options separated by semicolon and logger.
 //
-// Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true".
+// Example: "ra true;na true;rdnss true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;dns 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s".
 //
 // When ra (router advertisement) and na (neighbor advertisement) are both false or not specified, ra set to true.
 //
@@ -163,6 +164,12 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			default:
 				return nil, fmt.Errorf("unknown value %q for %q", val, key)
 			}
+		case "interval":
+			interval, err := time.ParseDuration(val)
+			if err != nil {
+				return nil, err
+			}
+			nsc.PacketInterval = interval
 		default:
 			return nil, errNDPSpoofConfig
 		}
@@ -257,31 +264,32 @@ type Packet struct {
 }
 
 type NDPSpoofer struct {
-	raEnabled    bool
-	naEnabled    bool
-	rdnssEnabled bool
-	debug        bool
-	auto         bool
-	opts         map[string]string
-	gwConn       *net.UDPConn
-	targets      []netip.Addr
-	dnsServers   []netip.Addr
-	gwIP         *netip.Addr
-	gwMAC        *net.HardwareAddr
-	iface        *net.Interface
-	hostIP       *netip.Addr
-	hostIPGlobal *netip.Addr
-	hostMAC      *net.HardwareAddr
-	fullduplex   bool
-	neighCache   *NeighCache
-	packets      chan *Packet
-	logger       *zerolog.Logger
-	prefixGlobal *netip.Prefix
-	rlt          uint16
-	startingFlag atomic.Bool
-	quit         chan bool
-	wg           sync.WaitGroup
-	pconn        *packet.Conn
+	raEnabled     bool
+	naEnabled     bool
+	rdnssEnabled  bool
+	debug         bool
+	auto          bool
+	opts          map[string]string
+	spoofInterval time.Duration
+	gwConn        *net.UDPConn
+	targets       []netip.Addr
+	dnsServers    []netip.Addr
+	gwIP          *netip.Addr
+	gwMAC         *net.HardwareAddr
+	iface         *net.Interface
+	hostIP        *netip.Addr
+	hostIPGlobal  *netip.Addr
+	hostMAC       *net.HardwareAddr
+	fullduplex    bool
+	neighCache    *NeighCache
+	packets       chan *Packet
+	logger        *zerolog.Logger
+	prefixGlobal  *netip.Prefix
+	rlt           uint16
+	startingFlag  atomic.Bool
+	quit          chan bool
+	wg            sync.WaitGroup
+	pconn         *packet.Conn
 }
 
 func (nr *NDPSpoofer) Interface() *net.Interface {
@@ -408,7 +416,6 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 				return nil, fmt.Errorf("list of dns servers is empty")
 			}
 		}
-
 	}
 	if conf.NA {
 		ndpspoofer.naEnabled = true
@@ -490,6 +497,11 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			return nil, fmt.Errorf("auto configuration is not supported on %s", runtime.GOOS)
 		}
 		ndpspoofer.opts = make(map[string]string, 15)
+	}
+	if conf.PacketInterval.Seconds() > 0 {
+		ndpspoofer.spoofInterval = conf.PacketInterval
+	} else {
+		ndpspoofer.spoofInterval = ndpSpoofTargetsInterval
 	}
 	// setting up logger
 	if conf.Logger != nil {
@@ -600,7 +612,7 @@ func (nr *NDPSpoofer) Stop() error {
 }
 
 func (nr *NDPSpoofer) spoofNA() {
-	t := time.NewTicker(ndpSpoofTargetsInterval)
+	t := time.NewTicker(nr.spoofInterval)
 	for {
 		select {
 		case <-nr.quit:
@@ -662,7 +674,7 @@ func (nr *NDPSpoofer) spoofRA() {
 	}
 	raLen := len(raPacket.data)
 	hostVMAC := oui.VendorWithMAC(*nr.hostMAC)
-	t := time.NewTicker(ndpSpoofTargetsInterval)
+	t := time.NewTicker(nr.spoofInterval)
 	for {
 		select {
 		case <-nr.quit:
@@ -1009,7 +1021,7 @@ func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
 func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
 	defer func() {
 		conn.Close()
-		nr.logger.Debug().Msgf("Copied %s for udp src: %s", network.PrettifyBytes(int64(conn.written.Load())), conn.srcAddr)
+		nr.logger.Debug().Msgf("[ndp spoofer] Copied %s for udp src: %s", network.PrettifyBytes(int64(conn.written.Load())), conn.srcAddr)
 		nr.wg.Done()
 	}()
 	buf := make([]byte, udpBufferSize)

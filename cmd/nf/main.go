@@ -69,6 +69,7 @@ func root(args []string) error {
 		return nil
 	})
 	flags.DurationVar(&conf.RouterLifetime, "rlt", time.Duration(600*time.Second), "Router lifetime for RA spoofing")
+	flags.DurationVar(&conf.PacketInterval, "interval", time.Duration(5*time.Second), "Interval between sent packets")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
