@@ -32,7 +32,7 @@ func root(args []string) error {
 	conf := &ndpspoof.NDPSpoofConfig{}
 	flags := flag.NewFlagSet(app, flag.ExitOnError)
 	flags.BoolVar(&conf.NA, "na", false, "Enable NA (neighbor advertisement) spoofing")
-	flags.BoolVar(&conf.RA, "ra", false, "Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified)")
+	flags.BoolVar(&conf.RA, "ra", false, "Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified")
 	flags.BoolVar(&conf.RDNSS, "rdnss", false, "Enable RDNSS spoofing. Enabling this option requires -dns-servers flag")
 	flags.BoolVar(&conf.FullDuplex, "f", false, "Run NA spoofing in fullduplex mode")
 	flags.BoolVar(&conf.Debug, "d", false, "Enable debug logging")

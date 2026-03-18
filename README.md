@@ -38,7 +38,7 @@ Usage of nf:
   -p string
         IPv6 prefix for RA spoofing
   -ra
-        Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified)
+        Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified
   -rdnss
         Enable RDNSS spoofing. Enabling this option requires -dns-servers flag
   -rlt duration
@@ -47,10 +47,6 @@ Usage of nf:
         Targets for NA spoofing. Example: "fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10"
   -v    Show version and build information
 ```
-
-### Usage as a library
-
-See [https://github.com/shadowy-pycoder/go-http-proxy-to-socks](https://github.com/shadowy-pycoder/go-http-proxy-to-socks)
 
 ### Example lab to test this tool
 
@@ -73,3 +69,7 @@ ip -6 route
 ```
 
 You should see Kali machine link local IP as a default gateway
+
+### Usage as a library
+
+See [https://github.com/shadowy-pycoder/go-http-proxy-to-socks](https://github.com/shadowy-pycoder/go-http-proxy-to-socks)
