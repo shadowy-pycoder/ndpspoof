@@ -35,6 +35,8 @@ Usage of nf:
         Enable NA (neighbor advertisement) spoofing
   -nocolor
         Disable colored output
+  -p string
+        IPv6 prefix for RA spoofing
   -ra
         Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified)
   -rdnss
@@ -49,3 +51,25 @@ Usage of nf:
 ### Usage as a library
 
 See [https://github.com/shadowy-pycoder/go-http-proxy-to-socks](https://github.com/shadowy-pycoder/go-http-proxy-to-socks)
+
+### Example lab to test this tool
+
+![Test RA lab](resources/RA_test.png)
+
+1. Kali machine with Host-only network vboxnet0
+2. Mint machine with Host-only network vboxnet1
+3. Cisco IOS on Linux (IOL) Layer 2 Advanced Enterprise K9, Version 17.16.01a (x86_64)
+
+On Kali machine run:
+
+```shell
+nf -d -auto -ra -i eth0 -p 2001:db8:7a31:4400::/64
+```
+
+On Mint machine run:
+
+```shell
+ip -6 route
+```
+
+You should see Kali machine link local IP as a default gateway

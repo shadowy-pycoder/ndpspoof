@@ -322,17 +322,9 @@ func (nr *NDPSpoofer) NeighCache() *NeighCache {
 
 func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 	ndpspoofer := &NDPSpoofer{}
-	var iface *net.Interface
 	var err error
 	if !conf.RA && !conf.NA {
 		return nil, fmt.Errorf("no attack vectors enabled")
-	}
-	iface, err = network.GetDefaultInterface()
-	if err != nil {
-		iface, err = network.GetDefaultInterfaceFromRouteIPv6()
-		if err != nil {
-			return nil, err
-		}
 	}
 	if conf.Interface != "" {
 		ndpspoofer.iface, err = net.InterfaceByName(conf.Interface)
@@ -340,7 +332,13 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			return nil, err
 		}
 	} else {
-		ndpspoofer.iface = iface
+		ndpspoofer.iface, err = network.GetDefaultInterface()
+		if err != nil {
+			ndpspoofer.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	prefixLocal, err := network.GetIPv6LinkLocalUnicastPrefixFromInterface(ndpspoofer.iface)
 	if err != nil {
@@ -352,26 +350,6 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 	hostIPGlobal, err := network.GetHostIPv6GlobalUnicastFromRoute()
 	if err == nil {
 		ndpspoofer.hostIPGlobal = &hostIPGlobal
-	}
-	if conf.Gateway != nil && network.Is6(*conf.Gateway) {
-		ndpspoofer.gwIP = conf.Gateway
-	} else {
-		var gwIP netip.Addr
-		if ndpspoofer.iface.Name != iface.Name {
-			gwIP, err = network.GetGatewayIPv6FromInterface(ndpspoofer.iface.Name)
-			if err != nil {
-				return nil, fmt.Errorf("failed fetching gateway ip: %w", err)
-			}
-		} else {
-			gwIP, err = network.GetDefaultGatewayIPv6()
-			if err != nil {
-				gwIP, err = network.GetDefaultGatewayIPv6FromRoute()
-				if err != nil {
-					return nil, fmt.Errorf("failed fetching gateway ip: %w", err)
-				}
-			}
-		}
-		ndpspoofer.gwIP = &gwIP
 	}
 	if conf.RA {
 		ndpspoofer.raEnabled = true
@@ -418,6 +396,16 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		}
 	}
 	if conf.NA {
+		if conf.Gateway != nil && network.Is6(*conf.Gateway) {
+			ndpspoofer.gwIP = conf.Gateway
+		} else {
+			var gwIP netip.Addr
+			gwIP, err = network.GetGatewayIPv6FromInterface(ndpspoofer.iface.Name)
+			if err != nil {
+				return nil, fmt.Errorf("failed fetching gateway ip: %w", err)
+			}
+			ndpspoofer.gwIP = &gwIP
+		}
 		ndpspoofer.naEnabled = true
 		ndpspoofer.neighCache = &NeighCache{Ifname: ndpspoofer.iface.Name, Entries: make(map[string]net.HardwareAddr)}
 		err = ndpspoofer.neighCache.Refresh()
