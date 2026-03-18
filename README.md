@@ -10,6 +10,14 @@
 
 ## Install
 
+1. Arch Linux/CachyOS/EndeavourOS
+
+```shell
+yay -S nf
+```
+
+2. Other systems
+
 ```shell
 CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/ndpspoof/cmd/nf@latest
 ```
