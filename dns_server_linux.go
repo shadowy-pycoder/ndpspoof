@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func NewDNSServer() (net.PacketConn, error) {
+func newDNSServer() (net.PacketConn, error) {
 	lc := net.ListenConfig{
 		Control: func(network, address string, conn syscall.RawConn) error {
 			var operr error
