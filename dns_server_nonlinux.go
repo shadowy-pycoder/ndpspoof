@@ -4,6 +4,6 @@ package ndpspoof
 
 import "net"
 
-func NewDNSServer() (net.PacketConn, error) {
+func newDNSServer() (net.PacketConn, error) {
 	return nil, nil
 }

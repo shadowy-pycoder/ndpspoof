@@ -28,39 +28,101 @@ var (
 	)
 )
 
+const usageHeader string = `nf - IPv6 NDP spoofing tool by shadowy-pycoder
+
+GitHub: https://github.com/shadowy-pycoder/ndpspoof
+Codeberg: https://codeberg.org/shadowy-pycoder/ndpspoof
+
+Usage: nf [-h -v -I -d -nocolor -auto -i INTERFACE -interval DURATION] [-na -f -t ADDRESS ... -g ADDRESS]
+          [-ra -p PREFIX -mtu INT -rlt DURATION -rdnss ADDRESS ... -E PACKET]
+OPTIONS:
+  General:
+  -h           Show this help message and exit
+  -v           Show version and build information
+  -I           Display list of network interfaces and exit
+  -d           Enable debug logging
+  -nocolor     Disable colored output
+  -auto        Automatically set kernel parameters (Linux/Android) and network settings
+  -i           The name of the network interface. Example: eth0 (Default: default interface)
+  -interval    Interval between sent packets (Default: 5s)
+
+  NA spoofing:
+  -na          Enable NA (neighbor advertisement) spoofing mode
+  -t           Targets for NA spoofing. (Example: "fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10")
+  -f           Fullduplex mode (send messages to targets and router)
+  -g           IPv6 address of custom gateway (Default: default gateway)
+
+  RA spoofing:
+  -ra          Enable RA (router advertisement) spoofing. It is enabled when no spoofing mode specified
+  -p           IPv6 prefix for RA spoofing (Example: 2001:db8:7a31:4400::/64)
+  -mtu         MTU value to send in RA packet (Default: interface value)
+  -rlt         Router lifetime value
+  -rdnss       Comma separated list of DNS servers for RDNSS mode (Example: "2001:4860:4860::8888,2606:4700:4700::1111")
+  -E           Specify IPv6 extension headers for RA Guard evasion. The packet structure should contain at least one fragment (F)
+               that is used to separate per-fragment headers (PFH) and headers for fragmentable part. PFH get included in each fragment,
+               all other headers become part of fragmentable payload. See RFC 8200 section 4.5 to learn more about fragment header.
+
+               Supported extension headers:
+
+                   H - Hop-by-Hop Options Header
+                   D - Destination Options Header
+                   S - Routing Header (Type 0) (Note: See RFC 5095)
+                   R - Routing Header (Type 2)
+                   F - Fragment Header
+                   L - One-shot Fragment Header
+                   N - No Next Header
+
+               Each header can be specified multiple times (e.g. HHDD) or you can add number to specify count (e.g. H16).
+               The maximum number of consecutive headers of one type is 16 (H16H2F will not work, but H16DH2F will). The
+               minimum number of consecutive headers is 1 (e.g. H0 will cause error).
+
+               The exception to this rule is D header where number means header size (e.g. D255 is maximum size).
+               You can still specify multiple D headers (e.g. D255D2D23). No next header count is ignored by design,
+               but you can add multiple N headers between other headers (e.g. HNDR F DN).
+
+               There are no limits where or how much headers to add to packet structure, but certain limits exist:
+
+                   Maximum payload length for IPv6 is 65535 bytes
+                   Maximum fragment offset is 8191 octet words
+                   Minimum IPv6 MTU is 1280 bytes
+
+               Note that fragment count you specify may be changed automatically to satisfy limits and 8 byte alignment requirement.
+               If you are not sure how many fragments you want, just do not specify any count.
+
+               Examples:
+
+                   F2 DSDS (same as atk6-fake_router26 -E F)
+                   FD154 (same as atk6-fake_router26 -E D)
+                   HLLLF (same as atk6-fake_router26 -E H111)
+                   HDR F2 D255 (just random structure)
+                   F (single letter F means regular RA packet)
+
+               As you can see, some examples mention atk6-fake_router26 which is part of The Hacker Choice's IPv6 Attack Toolkit (thc-ipv6).
+               Unlike thc-ipv6, ndpspoof (nf) tool does not offer predefined attack types, but you can construct them yourself.
+`
+
 func root(args []string) error {
 	conf := &ndpspoof.NDPSpoofConfig{}
 	flags := flag.NewFlagSet(app, flag.ExitOnError)
-	flags.BoolVar(&conf.NA, "na", false, "Enable NA (neighbor advertisement) spoofing")
-	flags.BoolVar(&conf.RA, "ra", false, "Enable RA (router advertisement) spoofing. It is enabled when no spoof mode specified")
-	flags.BoolVar(&conf.RDNSS, "rdnss", false, "Enable RDNSS spoofing. Enabling this option requires -dns-servers flag")
-	flags.BoolVar(&conf.FullDuplex, "f", false, "Run NA spoofing in fullduplex mode")
-	flags.BoolVar(&conf.Debug, "d", false, "Enable debug logging")
+	flags.BoolVar(&conf.NA, "na", false, "")
+	flags.BoolVar(&conf.RA, "ra", false, "")
+	flags.BoolVar(&conf.FullDuplex, "f", false, "")
+	flags.BoolVar(&conf.Debug, "d", false, "")
 
 	if slices.Contains(ndpspoof.AutoConfigSupportedOS, runtime.GOOS) {
-		flags.BoolVar(&conf.Auto, "auto", false, "Automatically set kernel parameters and network settings for spoofing")
+		flags.BoolVar(&conf.Auto, "auto", false, "")
 	}
-	flags.BoolFunc("v", "Show version and build information", func(flagValue string) error {
+	flags.BoolFunc("v", "", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", ndpspoof.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
 		return nil
 	})
-	flags.StringVar(
-		&conf.Targets,
-		"t",
-		"",
-		"Targets for NA spoofing. Example: \"fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10\"",
-	)
-	flags.StringVar(
-		&conf.DNSServers,
-		"dns-servers",
-		"",
-		"Comma separated list of DNS servers for RDNSS mode. Example: \"2001:4860:4860::8888,2606:4700:4700::1111\"",
-	)
-	gw := flags.String("g", "", "IPv6 address of custom gateway (Default: default gateway)")
-	flags.StringVar(&conf.Interface, "i", "", "The name of the network interface. Example: eth0 (Default: default interface)")
-	nocolor := flags.Bool("nocolor", false, "Disable colored output")
-	flags.BoolFunc("I", "Display list of interfaces and exit.", func(flagValue string) error {
+	flags.StringVar(&conf.Targets, "t", "", "")
+	flags.StringVar(&conf.RDNSS, "rdnss", "", "")
+	gw := flags.String("g", "", "")
+	flags.StringVar(&conf.Interface, "i", "", "")
+	nocolor := flags.Bool("nocolor", false, "")
+	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", app, err)
 			os.Exit(2)
@@ -68,9 +130,14 @@ func root(args []string) error {
 		os.Exit(0)
 		return nil
 	})
-	flags.DurationVar(&conf.RouterLifetime, "rlt", time.Duration(600*time.Second), "Router lifetime for RA spoofing")
-	flags.DurationVar(&conf.PacketInterval, "interval", time.Duration(5*time.Second), "Interval between sent packets")
-	prefix := flags.String("p", "", "IPv6 prefix for RA spoofing")
+	flags.DurationVar(&conf.RouterLifetime, "rlt", time.Duration(600*time.Second), "")
+	flags.DurationVar(&conf.PacketInterval, "interval", time.Duration(5*time.Second), "")
+	mtu := flags.Uint("mtu", 0, "")
+	prefix := flags.String("p", "", "")
+	flags.StringVar(&conf.PacketQuery, "E", "", "")
+	flags.Usage = func() {
+		fmt.Print(usageHeader)
+	}
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -89,11 +156,8 @@ func root(args []string) error {
 	if !conf.RA && !conf.NA {
 		conf.RA = true
 	}
-	if !conf.RA && conf.RDNSS {
+	if !conf.RA && conf.RDNSS != "" {
 		return fmt.Errorf("rdnss requires ra enabled")
-	}
-	if conf.RDNSS && conf.DNSServers == "" {
-		return fmt.Errorf("list of dns servers is empty")
 	}
 	if conf.RA {
 		if *prefix != "" {
@@ -108,6 +172,11 @@ func root(args []string) error {
 		}
 		if conf.RouterLifetime.Seconds() > 65535 {
 			return fmt.Errorf("router lifetime is invalid")
+		}
+		if *mtu > 1<<32-1 {
+			return fmt.Errorf("mtu value is out of range")
+		} else if *mtu > 0 {
+			conf.MTU = uint32(*mtu)
 		}
 	}
 	output := zerolog.ConsoleWriter{Out: os.Stdout, NoColor: *nocolor}
