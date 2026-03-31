@@ -42,7 +42,9 @@ OPTIONS:
   -I           Display list of network interfaces and exit
   -d           Enable debug logging
   -nocolor     Disable colored output
-  -auto        Automatically set kernel parameters (Linux/Android) and network settings
+  -auto        Automatically set kernel parameters (Linux/Android) and network settings. When RA spoofing is enabled and no -rdnss flag
+               is provided, RDNSS option is included in each packet with host IP as DNS server for targets. DNS server is setup using
+               resolv.conf or Google DNS as fallback nameserver.
   -i           The name of the network interface. Example: eth0 (Default: default interface)
   -interval    Interval between sent packets (Default: 5s)
 
@@ -54,9 +56,9 @@ OPTIONS:
 
   RA spoofing:
   -ra          Enable RA (router advertisement) spoofing. It is enabled when no spoofing mode specified
-  -p           IPv6 prefix for RA spoofing (Example: 2001:db8:7a31:4400::/64)
+  -p           IPv6 prefix for RA spoofing (Example: 2001:db8:7a31:4400::/64). See RFC 4862 for more info
   -mtu         MTU value to send in RA packet (Default: interface value)
-  -rlt         Router lifetime value
+  -rlt         Router lifetime value. Tells targets how long router should be used as default gateway. See RFC 4682 for more info
   -rdnss       Comma separated list of DNS servers for RDNSS mode (Example: "2001:4860:4860::8888,2606:4700:4700::1111")
   -E           Specify IPv6 extension headers for RA Guard evasion. The packet structure should contain at least one fragment (F)
                that is used to separate per-fragment headers (PFH) and headers for fragmentable part. PFH get included in each fragment,

@@ -412,12 +412,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 				return nil, fmt.Errorf("[ndp spoofer] failed creating DNS server on %s:53: %v", nr.hostIP, err)
 			}
 			nr.gwConn = pconn.(*net.UDPConn)
-			var gwIPv4 netip.Addr
-			gwIPv4, err = network.GetGatewayIPv4FromInterface(nr.iface.Name)
-			if err != nil {
-				gwIPv4 = netip.MustParseAddr("8.8.8.8")
-			}
-			nr.gwDNSAddr = &net.UDPAddr{IP: net.ParseIP(gwIPv4.String()), Port: 53}
+			nr.gwDNSAddr = nr.getResolver()
 		}
 		if conf.PacketQuery != "" {
 			ra := nr.newRAPacket(nr.rlt)
@@ -1221,4 +1216,19 @@ func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
 	if er != nil {
 		return
 	}
+}
+
+func (nr *NDPSpoofer) getResolver() *net.UDPAddr {
+	if resolvers, err := network.GetSystemNameservers(); err == nil {
+		for _, r := range resolvers {
+			if network.Is6(r) {
+				var zone string
+				if r.IsLinkLocalUnicast() {
+					zone = nr.iface.Name
+				}
+				return &net.UDPAddr{IP: net.ParseIP(r.String()), Port: 53, Zone: zone}
+			}
+		}
+	}
+	return &net.UDPAddr{IP: net.ParseIP("2001:4860:4860::8888"), Port: 53}
 }
