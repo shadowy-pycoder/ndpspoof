@@ -123,7 +123,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.RDNSS, "rdnss", "", "")
 	gw := flags.String("g", "", "")
 	flags.StringVar(&conf.Interface, "i", "", "")
-	nocolor := flags.Bool("nocolor", false, "")
+	flags.BoolVar(&conf.NoColor, "nocolor", false, "")
 	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", app, err)
@@ -181,10 +181,10 @@ func root(args []string) error {
 			conf.MTU = uint32(*mtu)
 		}
 	}
-	output := zerolog.ConsoleWriter{Out: os.Stdout, NoColor: *nocolor}
+	output := zerolog.ConsoleWriter{Out: os.Stdout, NoColor: conf.NoColor}
 	output.FormatTimestamp = func(i any) string {
 		ts, _ := time.Parse(time.RFC3339, i.(string))
-		if *nocolor {
+		if conf.NoColor {
 			return colors.WrapBrackets(ts.Format(time.TimeOnly))
 		}
 		return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
@@ -194,7 +194,7 @@ func root(args []string) error {
 			return ""
 		}
 		s := i.(string)
-		if *nocolor {
+		if conf.NoColor {
 			return s
 		}
 		result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {
@@ -210,7 +210,7 @@ func root(args []string) error {
 	}
 	output.FormatErrFieldValue = func(i any) string {
 		s := i.(string)
-		if *nocolor {
+		if conf.NoColor {
 			return s
 		}
 		result := ipPortPattern.ReplaceAllStringFunc(s, func(match string) string {

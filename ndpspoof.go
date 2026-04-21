@@ -40,7 +40,7 @@ var (
 	writeTimeoutUDP           time.Duration = 5 * time.Second
 	errInvalidWrite                         = errors.New("invalid write result")
 	errNDPSpoofConfig                       = fmt.Errorf(
-		`failed parsing ndp spoof options. Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS"`,
+		`failed parsing ndp spoof options. Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true"`,
 	)
 )
 
@@ -60,11 +60,12 @@ type NDPSpoofConfig struct {
 	PacketInterval time.Duration
 	MTU            uint32
 	PacketQuery    string
+	NoColor        bool
 }
 
 // NewNDPSpoofConfig creates NDPSpoofConfig from a list of options separated by semicolon and logger.
 //
-// Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS".
+// Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true".
 //
 // When ra (router advertisement) and na (neighbor advertisement) are both false or not specified, ra set to true.
 //
@@ -171,6 +172,15 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			nsc.MTU = uint32(mtu)
 		case "packet":
 			nsc.PacketQuery = val
+		case "nocolor":
+			switch val {
+			case "true", "1":
+				nsc.NoColor = true
+			case "false", "0":
+				nsc.NoColor = false
+			default:
+				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+			}
 		default:
 			return nil, errNDPSpoofConfig
 		}
@@ -265,6 +275,7 @@ type NDPSpoofer struct {
 	raEnabled     bool
 	naEnabled     bool
 	debug         bool
+	nocolor       bool
 	auto          bool
 	opts          map[string]string
 	spoofInterval time.Duration
@@ -517,6 +528,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		nr.spoofInterval = ndpSpoofTargetsInterval
 	}
 	// setting up logger
+	nr.nocolor = conf.NoColor
 	if conf.Logger != nil {
 		lvl := zerolog.InfoLevel
 		if nr.debug {
@@ -1103,6 +1115,10 @@ type udpConn struct {
 
 func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
 	buf := make([]byte, udpBufferSize)
+	arrow := "→ "
+	if nr.nocolor {
+		arrow = "->"
+	}
 	for {
 		select {
 		case <-nr.quit:
@@ -1121,7 +1137,7 @@ func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
 			if n > 0 {
 				c, err := net.DialUDP("udp", nil, gwDNS)
 				if err != nil {
-					nr.logger.Error().Err(err).Msgf("[ndp spoofer] Failed creating UDP connection %s→ %s", srcAddr, gwDNS)
+					nr.logger.Error().Err(err).Msgf("[ndp spoofer] Failed creating UDP connection %s%s%s", srcAddr, arrow, gwDNS)
 					continue
 				}
 				conn := &udpConn{UDPConn: c, srcAddr: srcAddr}
@@ -1166,6 +1182,10 @@ func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
 }
 
 func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
+	arrow := "→ "
+	if nr.nocolor {
+		arrow = "->"
+	}
 	defer func() {
 		conn.Close()
 		nr.logger.Debug().Msgf("[ndp spoofer] Copied %s for udp src: %s", network.PrettifyBytes(int64(conn.written.Load())), conn.srcAddr)
@@ -1209,7 +1229,7 @@ func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
 		if nread != nw {
 			nr.logger.Debug().
 				Err(io.ErrShortWrite).
-				Msgf("[ndp spoofer] Failed sending message %s→ %s", conn.LocalAddr(), conn.srcAddr)
+				Msgf("[ndp spoofer] Failed sending message %s%s%s", conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 	}

@@ -1,3 +1,3 @@
 package ndpspoof
 
-const Version string = "nf v0.0.7"
+const Version string = "nf v0.0.8"
