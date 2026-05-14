@@ -200,10 +200,23 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 	return nsc, nil
 }
 
+type NeighCacheEntry struct {
+	MAC    net.HardwareAddr
+	Vendor string
+	Domain string
+}
+
+func (nce NeighCacheEntry) String() string {
+	if nce.Domain != "" {
+		return fmt.Sprintf("(%s %s)", nce.Domain, nce.Vendor)
+	}
+	return fmt.Sprintf("(%s)", nce.Vendor)
+}
+
 type NeighCache struct {
 	sync.RWMutex
 	Ifname  string
-	Entries map[string]net.HardwareAddr
+	Entries map[string]NeighCacheEntry
 }
 
 func (nc *NeighCache) String() string {
@@ -212,21 +225,21 @@ func (nc *NeighCache) String() string {
 	nc.RLock()
 	defer nc.RUnlock()
 	for _, k := range slices.Sorted(maps.Keys(nc.Entries)) {
-		fmt.Fprintf(&sb, "%s (%s), ", k, oui.VendorWithMAC(nc.Entries[k]))
+		fmt.Fprintf(&sb, "%s %s, ", k, nc.Entries[k])
 	}
 	return strings.TrimRight(sb.String(), ", ")
 }
 
-func (nc *NeighCache) Get(ip netip.Addr) (net.HardwareAddr, bool) {
+func (nc *NeighCache) Get(ip netip.Addr) (NeighCacheEntry, bool) {
 	nc.RLock()
 	defer nc.RUnlock()
-	hw, ok := nc.Entries[ip.String()]
-	return hw, ok
+	nce, ok := nc.Entries[ip.String()]
+	return nce, ok
 }
 
-func (nc *NeighCache) Set(ip netip.Addr, hw net.HardwareAddr) {
+func (nc *NeighCache) Set(ip netip.Addr, nce NeighCacheEntry) {
 	nc.Lock()
-	nc.Entries[ip.String()] = hw
+	nc.Entries[ip.String()] = nce
 	nc.Unlock()
 }
 
@@ -261,7 +274,11 @@ func (nc *NeighCache) Refresh() error {
 		if err != nil {
 			return err
 		}
-		nc.Entries[ip.String()] = hw
+		nce := NeighCacheEntry{MAC: hw, Vendor: oui.VendorWithMAC(hw)}
+		if domain, err := network.GetHostName(ip); err == nil {
+			nce.Domain = domain
+		}
+		nc.Entries[ip.String()] = nce
 	}
 	return nil
 }
@@ -423,7 +440,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 				return nil, fmt.Errorf("[ndp spoofer] failed creating DNS server on %s:53: %v", nr.hostIP, err)
 			}
 			nr.gwConn = pconn.(*net.UDPConn)
-			nr.gwDNSAddr = nr.getResolver()
+			nr.gwDNSAddr = network.GetIPv6Resolver(nr.iface)
 		}
 		if conf.PacketQuery != "" {
 			ra := nr.newRAPacket(nr.rlt)
@@ -450,25 +467,25 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			nr.gwIP = &gwIP
 		}
 		nr.naEnabled = true
-		nr.neighCache = &NeighCache{Ifname: nr.iface.Name, Entries: make(map[string]net.HardwareAddr)}
+		nr.neighCache = &NeighCache{Ifname: nr.iface.Name, Entries: make(map[string]NeighCacheEntry)}
 		err = nr.neighCache.Refresh()
 		if err != nil {
 			return nil, fmt.Errorf("[ndp spoofer] %v", err)
 		}
-		if gwMAC, ok := nr.neighCache.Get(*nr.gwIP); !ok {
+		if gwInfo, ok := nr.neighCache.Get(*nr.gwIP); !ok {
 			doPing(nr.gwIP.WithZone(nr.iface.Name))
 			time.Sleep(probeThrottling)
 			err = nr.neighCache.Refresh()
 			if err != nil {
 				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
-			if gwMAC, ok := nr.neighCache.Get(*nr.gwIP); !ok {
+			if gwInfo, ok := nr.neighCache.Get(*nr.gwIP); !ok {
 				return nil, fmt.Errorf("[ndp spoofer] failed fetching gateway MAC")
 			} else {
-				nr.gwMAC = &gwMAC
+				nr.gwMAC = &gwInfo.MAC
 			}
 		} else {
-			nr.gwMAC = &gwMAC
+			nr.gwMAC = &gwInfo.MAC
 		}
 		nr.fullduplex = conf.FullDuplex
 		targets := make([]netip.Addr, 0, 5)
@@ -642,15 +659,15 @@ func (nr *NDPSpoofer) spoofNA() {
 			return
 		case <-t.C:
 			for _, targetIP := range nr.targets {
-				if targetMAC, ok := nr.neighCache.Get(targetIP); !ok {
+				if targetInfo, ok := nr.neighCache.Get(targetIP); !ok {
 					continue
 				} else {
-					np, err := nr.newNAPacket(*nr.hostMAC, targetMAC, *nr.gwIP, targetIP, *nr.gwIP)
+					np, err := nr.newNAPacket(*nr.hostMAC, targetInfo.MAC, *nr.gwIP, targetIP, *nr.gwIP)
 					if err != nil {
 						continue
 					}
 					nr.logger.Debug().
-						Msgf("[ndp spoofer] Sending %s of NA packet to %s (%s)", network.PrettifyBytes(int64(len(np.data))), targetIP, oui.VendorWithMAC(targetMAC))
+						Msgf("[ndp spoofer] Sending %s of NA packet to %s %s", network.PrettifyBytes(int64(len(np.data))), targetIP, targetInfo)
 					nr.packets <- np
 				}
 				if nr.fullduplex {
@@ -670,11 +687,11 @@ func (nr *NDPSpoofer) unspoofNA() error {
 	nr.logger.Info().Msgf("[ndp spoofer] Restoring neighbor cache of %d targets", len(nr.targets))
 	for range ndpUnspoofPacketCount {
 		for _, targetIP := range nr.targets {
-			if targetMAC, ok := nr.neighCache.Get(targetIP); !ok {
+			if targetInfo, ok := nr.neighCache.Get(targetIP); !ok {
 				continue
 			} else {
-				nr.logger.Debug().Msgf("[ndp spoofer] Restoring neighbor cache of %s (%s)", targetIP, oui.VendorWithMAC(targetMAC))
-				np, err := nr.newNAPacket(*nr.gwMAC, targetMAC, *nr.gwIP, targetIP, *nr.gwIP)
+				nr.logger.Debug().Msgf("[ndp spoofer] Restoring neighbor cache of %s %s", targetIP, targetInfo)
+				np, err := nr.newNAPacket(*nr.gwMAC, targetInfo.MAC, *nr.gwIP, targetIP, *nr.gwIP)
 				if err != nil {
 					nr.wg.Done()
 					return err
@@ -1236,19 +1253,4 @@ func (nr *NDPSpoofer) handleDNSConnection(conn *udpConn) {
 	if er != nil {
 		return
 	}
-}
-
-func (nr *NDPSpoofer) getResolver() *net.UDPAddr {
-	if resolvers, err := network.GetSystemNameservers(); err == nil {
-		for _, r := range resolvers {
-			if network.Is6(r) {
-				var zone string
-				if r.IsLinkLocalUnicast() {
-					zone = nr.iface.Name
-				}
-				return &net.UDPAddr{IP: net.ParseIP(r.String()), Port: 53, Zone: zone}
-			}
-		}
-	}
-	return &net.UDPAddr{IP: net.ParseIP("2001:4860:4860::8888"), Port: 53}
 }

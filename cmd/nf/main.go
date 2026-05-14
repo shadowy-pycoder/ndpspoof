@@ -26,6 +26,9 @@ var (
 	macPattern = regexp.MustCompile(
 		`(?i)(?:\b[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b|\b[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}-[0-9a-f]{2}\b|\b[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b|\b[a-z0-9_]+_[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}\b)`,
 	)
+	domainPattern = regexp.MustCompile(
+		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv|local)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+	)
 )
 
 const usageHeader string = `nf - IPv6 NDP spoofing tool by shadowy-pycoder
@@ -204,6 +207,9 @@ func root(args []string) error {
 			return colors.Gray(match).String()
 		})
 		result = macPattern.ReplaceAllStringFunc(result, func(match string) string {
+			return colors.Yellow(match).String()
+		})
+		result = domainPattern.ReplaceAllStringFunc(result, func(match string) string {
 			return colors.Yellow(match).String()
 		})
 		return result

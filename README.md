@@ -10,17 +10,23 @@
 
 ## Install
 
-1. Arch Linux/CachyOS/EndeavourOS
+- Arch Linux/CachyOS/EndeavourOS
 
-```shell
-yay -S nf
-```
+  ```shell
+  yay -S nf
+  ```
 
-2. Other systems
+  Or using `paru`:
 
-```shell
-CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/ndpspoof/cmd/nf@latest
-```
+  ```shell
+  paru -S nf
+  ```
+
+- Other systems
+
+  ```shell
+  CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/ndpspoof/cmd/nf@latest
+  ```
 
 ## Usage
 
