@@ -249,10 +249,10 @@ func (nc *NeighCache) Delete(ip netip.Addr) {
 	nc.Unlock()
 }
 
-func (nc *NeighCache) Refresh() error {
+func (nc *NeighCache) Refresh(resolve bool) error {
 	nc.Lock()
 	defer nc.Unlock()
-	cmd := exec.Command("sh", "-c", "ip -6 -br neigh")
+	cmd := exec.Command("sh", "-c", "ip -6 neigh")
 	out, err := cmd.Output()
 	if err != nil {
 		return err
@@ -260,23 +260,25 @@ func (nc *NeighCache) Refresh() error {
 	clear(nc.Entries)
 	for line := range strings.Lines(string(out)) {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 6 {
 			continue
 		}
-		if fields[1] != nc.Ifname {
+		if fields[2] != nc.Ifname {
 			continue
 		}
 		ip, err := netip.ParseAddr(fields[0])
 		if err != nil {
-			return err
+			continue
 		}
-		hw, err := net.ParseMAC(fields[2])
+		hw, err := net.ParseMAC(fields[4])
 		if err != nil {
-			return err
+			continue
 		}
 		nce := NeighCacheEntry{MAC: hw, Vendor: oui.VendorWithMAC(hw)}
-		if domain, err := network.GetHostName(ip); err == nil {
-			nce.Domain = domain
+		if resolve {
+			if domain, err := network.GetHostName(ip); err == nil {
+				nce.Domain = domain
+			}
 		}
 		nc.Entries[ip.String()] = nce
 	}
@@ -468,14 +470,14 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		}
 		nr.naEnabled = true
 		nr.neighCache = &NeighCache{Ifname: nr.iface.Name, Entries: make(map[string]NeighCacheEntry)}
-		err = nr.neighCache.Refresh()
+		err = nr.neighCache.Refresh(false)
 		if err != nil {
 			return nil, fmt.Errorf("[ndp spoofer] %v", err)
 		}
 		if gwInfo, ok := nr.neighCache.Get(*nr.gwIP); !ok {
 			doPing(nr.gwIP.WithZone(nr.iface.Name))
 			time.Sleep(probeThrottling)
-			err = nr.neighCache.Refresh()
+			err = nr.neighCache.Refresh(false)
 			if err != nil {
 				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
@@ -602,7 +604,7 @@ func (nr *NDPSpoofer) Start() {
 		nr.logger.Debug().Msgf("[ndp spoofer] Probing %d targets", len(nr.targets))
 		nr.probeTargetsOnce()
 		nr.logger.Debug().Msg("[ndp spoofer] Refreshing neighbor cache")
-		nr.neighCache.Refresh()
+		nr.neighCache.Refresh(false)
 		nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
 		nr.wg.Add(3)
 		go nr.probeTargets()
@@ -1016,7 +1018,7 @@ func (nr *NDPSpoofer) refreshNeighCache() {
 			return
 		case <-t.C:
 			nr.logger.Debug().Msg("[ndp spoofer] Refreshing neighbor cache")
-			nr.neighCache.Refresh()
+			nr.neighCache.Refresh(true)
 			nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
 		}
 	}
