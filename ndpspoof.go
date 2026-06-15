@@ -23,13 +23,14 @@ import (
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/mshark/oui"
+	"github.com/vishvananda/netns"
 )
 
 var (
-	AutoConfigSupportedOS                   = []string{"linux", "android"}
+	FeatureSupportedOS                      = []string{"linux", "android"}
 	defaultRLT                              = 600 // also used for RDNSS lifetime
 	probeThrottling           time.Duration = 50 * time.Millisecond
-	probeTargetsInterval      time.Duration = 60 * time.Second
+	probeTargetsInterval      time.Duration = 30 * time.Second
 	refreshNDPCacheInterval   time.Duration = 15 * time.Second
 	ndpSpoofTargetsInterval   time.Duration = 5 * time.Second
 	ndpSendFragmentsInterval  time.Duration = 1 * time.Second
@@ -40,7 +41,7 @@ var (
 	writeTimeoutUDP           time.Duration = 5 * time.Second
 	errInvalidWrite                         = errors.New("invalid write result")
 	errNDPSpoofConfig                       = fmt.Errorf(
-		`failed parsing ndp spoof options. Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true"`,
+		`[ndp spoofer] failed parsing ndp spoof options. Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true;netns ns1"`,
 	)
 )
 
@@ -61,11 +62,12 @@ type NDPSpoofConfig struct {
 	MTU            uint32
 	PacketQuery    string
 	NoColor        bool
+	NetNS          string
 }
 
-// NewNDPSpoofConfig creates NDPSpoofConfig from a list of options separated by semicolon and logger.
+// NewNDPSpoofConfig creates NDPSpoofConfig from logger and a list of options separated by semicolon.
 //
-// Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true".
+// Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;rdnss 2001:4860:4860::8888;gateway fe80::1;fullduplex false;debug true;interface eth0;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;auto true;interval 10s;mtu 1500;packet HRD F2 DSDS;nocolor true;netns ns1".
 //
 // When ra (router advertisement) and na (neighbor advertisement) are both false or not specified, ra set to true.
 //
@@ -90,7 +92,7 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 		case "gateway":
 			gateway, err := netip.ParseAddr(val)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
 			nsc.Gateway = &gateway
 		case "fullduplex":
@@ -100,24 +102,24 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.FullDuplex = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
 		case "prefix":
 			prefix, err := netip.ParsePrefix(val)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
 			if !network.Is6(prefix.Addr()) {
-				return nil, fmt.Errorf("prefix is not valid IPv6 address")
+				return nil, fmt.Errorf("[ndp spoofer] prefix is not valid IPv6 address")
 			}
 			nsc.Prefix = &prefix
 		case "router_lifetime":
 			rlt, err := time.ParseDuration(val)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
 			if rlt.Seconds() > 65535 {
-				return nil, fmt.Errorf("router lifetime is invalid")
+				return nil, fmt.Errorf("[ndp spoofer] router lifetime is invalid")
 			}
 			nsc.RouterLifetime = rlt
 		case "ra":
@@ -127,7 +129,7 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.RA = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
 		case "na":
 			switch val {
@@ -136,7 +138,7 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.NA = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
 		case "rdnss":
 			nsc.RDNSS = val
@@ -147,7 +149,7 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.Debug = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
 		case "auto":
 			switch val {
@@ -156,18 +158,18 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.Auto = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
 		case "interval":
 			interval, err := time.ParseDuration(val)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
 			nsc.PacketInterval = interval
 		case "mtu":
 			mtu, err := strconv.ParseUint(val, 10, 32)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("[ndp spoofer] %v", err)
 			}
 			nsc.MTU = uint32(mtu)
 		case "packet":
@@ -179,8 +181,10 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 			case "false", "0":
 				nsc.NoColor = false
 			default:
-				return nil, fmt.Errorf("unknown value %q for %q", val, key)
+				return nil, fmt.Errorf("[ndp spoofer] unknown value %q for %q", val, key)
 			}
+		case "netns":
+			nsc.NetNS = val
 		default:
 			return nil, errNDPSpoofConfig
 		}
@@ -189,13 +193,17 @@ func NewNDPSpoofConfig(s string, logger *zerolog.Logger) (*NDPSpoofConfig, error
 		nsc.RA = true
 	}
 	if nsc.NA && nsc.Targets == "" {
-		return nil, fmt.Errorf("list of targets is empty")
+		return nil, fmt.Errorf("[ndp spoofer] list of targets is empty")
 	}
 	if !nsc.RA && nsc.RDNSS != "" {
-		return nil, fmt.Errorf("rdnss requires ra enabled")
+		return nil, fmt.Errorf("[ndp spoofer] rdnss requires ra enabled")
 	}
-	if !slices.Contains(AutoConfigSupportedOS, runtime.GOOS) && nsc.Auto {
-		return nil, fmt.Errorf("auto configuration is not supported on %s", runtime.GOOS)
+	if !slices.Contains(FeatureSupportedOS, runtime.GOOS) && nsc.Auto {
+		return nil, fmt.Errorf("[ndp spoofer] auto configuration is not supported on %s", runtime.GOOS)
+	}
+
+	if !slices.Contains(FeatureSupportedOS, runtime.GOOS) && nsc.NetNS != "" {
+		return nil, fmt.Errorf("[ndp spoofer] network namespaces are not supported on %s", runtime.GOOS)
 	}
 	return nsc, nil
 }
@@ -321,6 +329,7 @@ type NDPSpoofer struct {
 	quit          chan bool
 	wg            sync.WaitGroup
 	pconn         *packet.Conn
+	ns            *netns.NsHandle
 }
 
 func (nr *NDPSpoofer) Interface() *net.Interface {
@@ -354,6 +363,35 @@ func (nr *NDPSpoofer) NeighCache() *NeighCache {
 func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 	nr := &NDPSpoofer{}
 	var err error
+	if conf.NetNS != "" {
+		if !slices.Contains(FeatureSupportedOS, runtime.GOOS) {
+			return nil, fmt.Errorf("[ndp spoofer] network namespaces are not supported on %s", runtime.GOOS)
+		}
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			return nil, fmt.Errorf("[ndp spoofer] failed getting current namespace: %v", err)
+		}
+		defer currentNs.Close()
+		var targetNs netns.NsHandle
+		if strings.HasPrefix(conf.NetNS, "/") {
+			targetNs, err = netns.GetFromPath(conf.NetNS)
+		} else {
+			targetNs, err = netns.GetFromName(conf.NetNS)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("[ndp spoofer] failed getting namespace %s: %v", conf.NetNS, err)
+		}
+		nr.ns = &targetNs
+		if err := netns.Set(*nr.ns); err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("[ndp spoofer] permission denied (try setting CAP_SYS_ADMIN and CAP_NET_RAW capabilities): %v", err)
+			}
+			return nil, err
+		}
+		defer netns.Set(currentNs)
+	}
 	if !conf.RA && !conf.NA {
 		return nil, fmt.Errorf("[ndp spoofer] no attack vectors enabled")
 	}
@@ -362,7 +400,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		if os.Geteuid() != 0 {
 			return nil, fmt.Errorf("[ndp spoofer] auto configuration requires root privileges")
 		}
-		if !slices.Contains(AutoConfigSupportedOS, runtime.GOOS) {
+		if !slices.Contains(FeatureSupportedOS, runtime.GOOS) {
 			return nil, fmt.Errorf("[ndp spoofer] auto configuration is not supported on %s", runtime.GOOS)
 		}
 		nr.opts = make(map[string]string, 15)
@@ -377,7 +415,10 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 		if err != nil {
 			nr.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
 			if err != nil {
-				return nil, fmt.Errorf("[ndp spoofer] %v", err)
+				nr.iface, err = network.GetFirstAvailableInterfaceFromRouteIPv6()
+				if err != nil {
+					return nil, fmt.Errorf("[ndp spoofer] %v", err)
+				}
 			}
 		}
 	}
@@ -475,7 +516,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			return nil, fmt.Errorf("[ndp spoofer] %v", err)
 		}
 		if gwInfo, ok := nr.neighCache.Get(*nr.gwIP); !ok {
-			doPing(nr.gwIP.WithZone(nr.iface.Name))
+			doUDPPing(*nr.gwIP, nr.iface)
 			time.Sleep(probeThrottling)
 			err = nr.neighCache.Refresh(false)
 			if err != nil {
@@ -568,6 +609,17 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 
 func (nr *NDPSpoofer) Start() {
 	nr.startingFlag.Store(true)
+	var currentNs netns.NsHandle
+	var err error
+	if nr.ns != nil {
+		runtime.LockOSThread()
+		if currentNs, err = netns.Get(); err != nil {
+			nr.logger.Error().Err(err).Msg("[ndp spoofer] failed getting current namespace: ")
+		}
+		if err = netns.Set(*nr.ns); err != nil {
+			nr.logger.Error().Err(err).Msg("[ndp spoofer] failed setting namespace: ")
+		}
+	}
 	nr.logger.Info().Msg("[ndp spoofer] Started")
 	if nr.auto {
 		nr.logger.Info().Msg("[ndp spoofer] Configuring system")
@@ -601,11 +653,21 @@ func (nr *NDPSpoofer) Start() {
 		nr.logger.Info().Msg("[ndp spoofer] NA spoofing disabled")
 	}
 	if nr.naEnabled {
-		nr.logger.Debug().Msgf("[ndp spoofer] Probing %d targets", len(nr.targets))
 		nr.probeTargetsOnce()
 		nr.logger.Debug().Msg("[ndp spoofer] Refreshing neighbor cache")
 		nr.neighCache.Refresh(false)
-		nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
+		if len(nr.neighCache.Entries) > 0 {
+			nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
+		}
+	}
+	if nr.ns != nil {
+		if currentNs > 0 {
+			netns.Set(currentNs)
+			currentNs.Close()
+		}
+		runtime.UnlockOSThread()
+	}
+	if nr.naEnabled {
 		nr.wg.Add(3)
 		go nr.probeTargets()
 		go nr.refreshNeighCache()
@@ -644,6 +706,17 @@ func (nr *NDPSpoofer) Stop() error {
 	}
 	nr.wg.Wait()
 	close(nr.packets)
+	if nr.ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		netns.Set(*nr.ns)
+		defer nr.ns.Close()
+	}
 	if nr.auto {
 		nr.logger.Info().Msg("[ndp spoofer] Restoring system settings")
 		nr.clearSettings()
@@ -654,6 +727,7 @@ func (nr *NDPSpoofer) Stop() error {
 
 func (nr *NDPSpoofer) spoofNA() {
 	t := time.NewTicker(nr.spoofInterval)
+	defer t.Stop()
 	for {
 		select {
 		case <-nr.quit:
@@ -728,6 +802,7 @@ func (nr *NDPSpoofer) spoofRA() {
 	raLen := network.PrettifyBytes(int64(len(raPacket.data)))
 	hostVMAC := oui.VendorWithMAC(*nr.hostMAC)
 	t := time.NewTicker(nr.spoofInterval)
+	defer t.Stop()
 	for {
 		select {
 		case <-nr.quit:
@@ -778,6 +853,7 @@ func (nr *NDPSpoofer) unspoofRA() error {
 func (nr *NDPSpoofer) spoofRAGuard() {
 	hostVMAC := oui.VendorWithMAC(*nr.hostMAC)
 	t := time.NewTicker(nr.spoofInterval)
+	defer t.Stop()
 	if len(nr.raguard.chunks) == 1 {
 		eth, err := layers.NewEthernetFrame(network.IPv6MulticastMAC, *nr.hostMAC, layers.EtherTypeIPv6, nr.raguard.chunks[0])
 		if err != nil {
@@ -960,38 +1036,58 @@ func doPing(ip netip.Addr) error {
 	return nil
 }
 
+func doUDPPing(ip netip.Addr, dev *net.Interface) error {
+	var zone string
+	if ip.IsLinkLocalUnicast() {
+		zone = dev.Name
+	}
+	addr := &net.UDPAddr{IP: net.ParseIP(network.StripZone(ip).String()), Port: 64223, Zone: zone}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return err
+	}
+	conn.Write([]byte{0x6f, 0x00, 0x70, 0x69, 0x6e, 0x67})
+	return conn.Close()
+}
+
 func (nr *NDPSpoofer) probeTargetsOnce() {
-	var wg sync.WaitGroup
+	nr.logger.Debug().Msgf("[ndp spoofer] Probing gateway %s", nr.gwIP)
+	doUDPPing(*nr.gwIP, nr.iface)
+	time.Sleep(probeThrottling)
+	nr.logger.Debug().Msgf("[ndp spoofer] Probing %d targets", len(nr.targets))
 	for _, ip := range nr.targets {
-		wg.Add(1)
-		go func(ip netip.Addr) {
-			defer wg.Done()
-			doPing(ip.WithZone(nr.iface.Name))
-		}(ip)
+		doUDPPing(ip, nr.iface)
 		time.Sleep(probeThrottling)
 	}
-	wg.Wait()
 }
 
 func (nr *NDPSpoofer) probeTargets() {
+	if nr.ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		netns.Set(*nr.ns)
+	}
 	t := time.NewTicker(probeTargetsInterval)
-	var wg sync.WaitGroup
+	defer t.Stop()
 	for {
 		select {
 		case <-nr.quit:
 			nr.wg.Done()
 			return
 		case <-t.C:
+			nr.logger.Debug().Msgf("[ndp spoofer] Probing gateway %s", nr.gwIP)
+			doUDPPing(*nr.gwIP, nr.iface)
+			time.Sleep(probeThrottling)
 			nr.logger.Debug().Msgf("[ndp spoofer] Probing %d targets", len(nr.targets))
 			for _, ip := range nr.targets {
-				wg.Add(1)
-				go func(ip netip.Addr) {
-					defer wg.Done()
-					doPing(ip.WithZone(nr.iface.Name))
-				}(ip)
+				doUDPPing(ip, nr.iface)
 				time.Sleep(probeThrottling)
 			}
-			wg.Wait()
 		}
 	}
 }
@@ -1010,7 +1106,18 @@ func (nr *NDPSpoofer) handlePackets() {
 }
 
 func (nr *NDPSpoofer) refreshNeighCache() {
+	if nr.ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		netns.Set(*nr.ns)
+	}
 	t := time.NewTicker(refreshNDPCacheInterval)
+	defer t.Stop()
 	for {
 		select {
 		case <-nr.quit:
@@ -1019,7 +1126,9 @@ func (nr *NDPSpoofer) refreshNeighCache() {
 		case <-t.C:
 			nr.logger.Debug().Msg("[ndp spoofer] Refreshing neighbor cache")
 			nr.neighCache.Refresh(true)
-			nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
+			if len(nr.neighCache.Entries) > 0 {
+				nr.logger.Info().Msgf("[ndp spoofer] Detected targets: %s", nr.neighCache)
+			}
 		}
 	}
 }
@@ -1027,10 +1136,10 @@ func (nr *NDPSpoofer) refreshNeighCache() {
 func (nr *NDPSpoofer) applySettings() error {
 	promisc := network.GetPromiscuous(nr.iface.Name)
 	if promisc < 0 {
-		return fmt.Errorf("failed getting promiscuous mode value from %s", nr.iface.Name)
+		nr.logger.Warn().Msgf("[ndp spoofer] failed getting promiscuous mode value from %s", nr.iface.Name)
 	}
 	if err := network.SetPromiscuous(nr.iface.Name, true); err != nil {
-		return err
+		nr.logger.Warn().Err(err).Msgf("[ndp spoofer] failed setting promiscuous mode for %s: ", nr.iface.Name)
 	}
 	if promisc > 0 {
 		nr.opts["promisc"] = "true"
@@ -1133,6 +1242,16 @@ type udpConn struct {
 }
 
 func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
+	if nr.ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		netns.Set(*nr.ns)
+	}
 	buf := make([]byte, udpBufferSize)
 	arrow := "→ "
 	if nr.nocolor {

@@ -6,7 +6,7 @@ all: build
 .PHONY: build
 build:
 	CGO_ENABLED=0 go build -ldflags "-s -w" -trimpath -o ./bin/${APP_NAME} ./cmd/${APP_NAME}/*.go
-	sudo setcap cap_net_raw+ep ./bin/${APP_NAME}
+	sudo setcap cap_sys_admin,cap_net_raw+ep ./bin/${APP_NAME}
 
 .PHONY: test
 test:

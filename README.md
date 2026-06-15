@@ -36,7 +36,7 @@ nf - IPv6 NDP spoofing tool by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/ndpspoof
 Codeberg: https://codeberg.org/shadowy-pycoder/ndpspoof
 
-Usage: nf [-h -v -I -d -nocolor -auto -i INTERFACE -interval DURATION] [-na -f -t ADDRESS ... -g ADDRESS]
+Usage: nf [-h -v -I -d -nocolor -auto -i INTERFACE -interval DURATION -n NAMESPACE] [-na -f -t ADDRESS ... -g ADDRESS]
           [-ra -p PREFIX -mtu INT -rlt DURATION -rdnss ADDRESS ... -E PACKET]
 OPTIONS:
   General:
@@ -50,6 +50,7 @@ OPTIONS:
                resolv.conf or Google DNS as fallback nameserver.
   -i           The name of the network interface. Example: eth0 (Default: default interface)
   -interval    Interval between sent packets (Default: 5s)
+  -n           The name or path of network namespace (Linux/Android) (Default: default namespace)
 
   NA spoofing:
   -na          Enable NA (neighbor advertisement) spoofing mode
