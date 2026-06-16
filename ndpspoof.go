@@ -710,7 +710,7 @@ func (nr *NDPSpoofer) Stop() error {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err != nil {
+		if err == nil {
 			defer currentNs.Close()
 			defer netns.Set(currentNs)
 		}
@@ -1066,7 +1066,7 @@ func (nr *NDPSpoofer) probeTargets() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err != nil {
+		if err == nil {
 			defer currentNs.Close()
 			defer netns.Set(currentNs)
 		}
@@ -1110,7 +1110,7 @@ func (nr *NDPSpoofer) refreshNeighCache() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err != nil {
+		if err == nil {
 			defer currentNs.Close()
 			defer netns.Set(currentNs)
 		}
@@ -1246,7 +1246,7 @@ func (nr *NDPSpoofer) listenAndServeDNS(gwDNS *net.UDPAddr) {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err != nil {
+		if err == nil {
 			defer currentNs.Close()
 			defer netns.Set(currentNs)
 		}
