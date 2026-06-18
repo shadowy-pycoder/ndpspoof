@@ -374,6 +374,7 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			return nil, fmt.Errorf("[ndp spoofer] failed getting current namespace: %v", err)
 		}
 		defer currentNs.Close()
+		defer netns.Set(currentNs)
 		var targetNs netns.NsHandle
 		if strings.HasPrefix(conf.NetNS, "/") {
 			targetNs, err = netns.GetFromPath(conf.NetNS)
@@ -390,7 +391,6 @@ func NewNDPSpoofer(conf *NDPSpoofConfig) (*NDPSpoofer, error) {
 			}
 			return nil, err
 		}
-		defer netns.Set(currentNs)
 	}
 	if !conf.RA && !conf.NA {
 		return nil, fmt.Errorf("[ndp spoofer] no attack vectors enabled")
